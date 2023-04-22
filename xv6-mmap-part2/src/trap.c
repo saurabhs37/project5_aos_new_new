@@ -32,6 +32,21 @@ idtinit(void)
   lidt(idt, sizeof(idt));
 }
 
+int pagefault_handler(struct trapframe *tf)
+{
+  uint fault_addr = rcr2();
+  cprintf("============in pagefault_handler============\n");
+  cprintf("pid %d %s: trap %d err %d on cpu %d " "eip 0x%x addr 0x%x\n", myproc()->pid, myproc()->name, tf->trapno, tf->err, cpuid(), tf->eip, fault_addr);
+
+  // my code
+  // check fault_addr is correspond to one of mmap pages
+  if (lazyMampPageAllocation(fault_addr))
+  {
+    return 1;
+  }
+  return 0;
+}
+
 //PAGEBREAK: 41
 void
 trap(struct trapframe *tf)
@@ -77,7 +92,10 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-
+  case T_PGFLT:
+    if (pagefault_handler(tf)) {
+      break;
+    }
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){

@@ -27,6 +27,7 @@ void *kmalloc(uint nbytes);
 void kmfree(void *addr);
 void *mmap(void*, int, int, int, int, int);
 int munmap(void*, int);
+int msync(void*, int);
 
 // ulib.c
 int stat(const char*, struct stat*);

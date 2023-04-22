@@ -155,3 +155,18 @@ filewrite(struct file *f, char *addr, int n)
   panic("filewrite");
 }
 
+int fileseek(struct file *f, uint offset)
+{
+  if (f->type == FD_INODE) // fileseek is valid for INODE file type
+  {
+    // checking if file readable or writable
+    if (f->readable != 0 || f->writable != 0)
+    {
+      ilock(f->ip);
+      f->off = offset;
+      iunlock(f->ip);
+      return 1;
+    }
+  }
+  panic("fileseek");
+}

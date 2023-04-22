@@ -91,9 +91,14 @@ struct segdesc {
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
 
 // Page table/directory entry flags.
+// From xv6 documentation
+// 6      5          4                  3                        2      1              0
+// Dirty  Accessed   Cache Disabled     Write Trhough/back       User   Writable       Present
+// Page table/directory entry flags.
 #define PTE_P           0x001   // Present
 #define PTE_W           0x002   // Writeable
 #define PTE_U           0x004   // User
+#define PTE_D           0x040   // Dirty , from documentation
 #define PTE_PS          0x080   // Page Size
 
 // Address in page table or page directory entry

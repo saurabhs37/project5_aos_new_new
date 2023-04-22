@@ -33,6 +33,7 @@ void            fileinit(void);
 int             fileread(struct file*, char*, int n);
 int             filestat(struct file*, struct stat*);
 int             filewrite(struct file*, char*, int n);
+int             fileseek(struct file*, uint);
 
 // fs.c
 void            readsb(int dev, struct superblock *sb);
@@ -197,5 +198,7 @@ void kmfree(void *ap);
 void mmapinit(void);
 void *mmap(void*, int, int, int, int, int);
 int munmap(void*, int);
+int msync(void*, int);
 void unmapallmmap();
 void copyMmapPages(struct proc *srcProc, struct proc *destProc);
+int lazyMampPageAllocation(uint addr);

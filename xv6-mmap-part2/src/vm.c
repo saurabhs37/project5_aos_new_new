@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "elf.h"
 #include "spinlock.h"
+#include "mman.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -390,8 +391,6 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 // Implementation of mmap/munmap 
 
 // DS for bookkeeping mmap/munmap 
-#define ANONYMOUS_REGION 0
-#define FILE_BACKED_REGION 1
 
 struct spinlock mmap_lock;
 uint mmapRegionSize;
@@ -401,7 +400,7 @@ typedef struct {
   int length;
   int prot;
   int flags;
-  int region; 
+  int region; // flags and region are same 
   int offset;  
   int fd;
   void *nxt;
@@ -431,7 +430,7 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
 {
   char *a = 0; // page align address
   char *b = 0; // tmp addr
-  void *ret = 0; 
+  //void *ret = 0; 
   mmapInfo* node = 0;
   struct file* f = 0;
   int newFd = -1;
@@ -445,10 +444,26 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
     b = (char*)(MMAPBASE + mmapRegionSize);
     a = (char*)PGROUNDDOWN((uint)b);
     lenInPageSz = (length - 1) / PGSIZE + 1;
-    ret = (void*)allocuvm(p->pgdir, (uint)a, (uint)a+length);
-    if (ret == 0) {
-      release(&mmap_lock);
-      return 0;
+    // Lazy page loading, Don't allocate page now
+    // Page will be allocated in fault handler
+    //ret = (void*)allocuvm(p->pgdir, (uint)a, (uint)a+length);
+    //if (ret == 0) {
+    //  release(&mmap_lock);
+    //  return 0;
+    //}
+    // check flags are consistent with fd 
+    if (flags == MAP_ANONYMOUS) {
+        if (fd > 0) {
+        // error, fd is provided for ANONYMOUS
+        release(&mmap_lock);
+        return 0;
+      }
+    } else if (flags == MAP_FILE) {
+      if (fd < 0 || fd >= NOFILE || p->ofile[fd] == 0) {
+        // error
+        release(&mmap_lock);
+        return 0;
+      }
     }
     // allocuvm also zeroout the page
     // insert this mapping in process mmapInfoList;
@@ -462,7 +477,7 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
     if (fd < 0 || fd >= NOFILE || (f=p->ofile[fd]) == 0)
     {
       node->fd = -1;
-      node->region = ANONYMOUS_REGION;
+      node->region = MAP_ANONYMOUS;
     }
     else 
     {
@@ -474,7 +489,7 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
         }
       }
       node->fd = newFd;
-      node->region = FILE_BACKED_REGION;
+      node->region = MAP_FILE;
     }
     mmapRegionSize += (lenInPageSz * PGSIZE); // increase size if page is allocated in mmap region
     release(&mmap_lock);
@@ -509,6 +524,12 @@ int munmap(void* addr, int length)
       {
         // found address;
         deallocuvm(p->pgdir, (uint)node->addr + node->length, (uint)node->addr);
+        // check if page is backed by file
+        if (node->fd != -1 && node->flags == MAP_FILE)
+        {
+          fileclose(p->ofile[node->fd]);
+          p->ofile[node->fd] = 0;
+        }
         // delete node 
         if (prevNode) {
           prevNode->nxt = node->nxt;
@@ -601,6 +622,162 @@ void copyMmapPages(struct proc *srcProc, struct proc *destProc)
     srcNode = srcNode->nxt;
   }
   release(&mmap_lock);
+}
+
+int lazyMampPageAllocation(uint addr)
+{
+  // first check if addr is correspond to any mmap pages
+  struct proc *p = myproc();
+  mmapInfo *node = 0;
+  void *ret = 0;
+  uint a = 0;
+  pte_t *pte = 0;
+  int fileoffset = 0;
+  if (p == 0 || p->killed)
+    return 0;
+  node = (mmapInfo*)p->mmapInfoList;
+  while(node) 
+  {
+    if (addr >= (uint)node->addr && addr < (uint)node->addr + node->length) 
+    {
+      // addr is mapped in mmap pages
+      // allocate this mmap page
+      a = PGROUNDDOWN(addr);
+      pte = walkpgdir(p->pgdir, (void*)a, 0);
+      if (pte != 0 && *pte) 
+      {
+        if (*pte & PTE_P) 
+        {
+          // page already allocated 
+          return 0;
+        }
+      }
+      ret = (void*)allocuvm(p->pgdir, a, a+PGSIZE);
+      if (ret == 0)
+      {
+        //panic("lazyMmapPageAllocation");
+        return 0;
+      }
+      // Check if page is backed by file 
+      if (node->fd > 0) 
+      {
+        fileoffset = node->offset + (a - (uint)node->addr);
+        fileseek(p->ofile[node->fd], fileoffset);
+        // Node : fileread is adjusting length of read of file length is less
+        if (fileread(p->ofile[node->fd], (char*)a, PGSIZE) == -1)
+        {
+          // read failed
+          // offset might be wrong
+          // Can we panic? 
+          return 0; 
+        }
+      }
+      // by default pages are allocated with write permission 
+      // we need to check node->prot != PROT_WRITE then set page write only 
+      pte = walkpgdir(p->pgdir, (void*)a, 0);
+      if (pte != 0 && *pte && node->prot != PROT_WRITE) 
+      {
+        if (*pte & PTE_P) 
+        {
+          (*pte) = (*pte) & ~(PTE_W);
+        } else 
+        {
+          // not possible 
+          return 0;
+        } 
+      }
+
+      return 1;
+    }
+    node = (mmapInfo*)node->nxt;
+  }
+  return 0;
+}
+
+int msync(void *addr, int length)
+{
+  struct proc *p = myproc();
+  int status = -1;
+  mmapInfo *node = 0;
+  pte_t *pte = 0;
+  uint i = 0;
+  void *startWriteAddr = 0;
+  int writeLen = 0;
+  int fileoffset = 0;
+  if ((uint)addr == 0 || length <= 0)
+    return status;
+  if (p)
+  {
+    node = (mmapInfo *)p->mmapInfoList;
+    while (node)
+    {
+      if (addr == node->addr && length == node->length)
+      {
+        if (node->fd < 0 || p->ofile[node->fd] == 0) 
+          return status;
+
+        i = (uint)addr;
+        for(; i < (uint)addr +node->length; i += PGSIZE)
+        {
+          if ((pte = walkpgdir(p->pgdir, (void*)i , 0)) == 0) 
+          {
+            // Page not found? Must be something wrong
+            if (startWriteAddr != 0 && writeLen != 0) {
+	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+              fileseek(p->ofile[node->fd], fileoffset);
+              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              startWriteAddr = 0;
+              writeLen = 0;
+            } 
+            continue;  
+          }
+          if (!(*pte & PTE_P)) { // Check page is allocated 
+            if (startWriteAddr != 0 && writeLen != 0) {
+	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+              fileseek(p->ofile[node->fd], fileoffset);
+              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              startWriteAddr = 0;
+              writeLen = 0;
+            } 
+            continue;
+          }
+
+          if (!(*pte & PTE_W)) { // Page is write protected, Don't need to write data
+            // write old block 
+            if (startWriteAddr != 0 && writeLen != 0) {
+	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+              fileseek(p->ofile[node->fd], fileoffset);
+              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              startWriteAddr = 0;
+              writeLen = 0;
+            } 
+            continue;
+          }
+
+          if (*pte & PTE_D) { // Dirty bit set, We need to write page
+            if (startWriteAddr != 0 && writeLen != 0) {
+              writeLen += PGSIZE;
+            } else {
+              startWriteAddr = (void*)i;
+              writeLen = PGSIZE;
+            }
+          }
+        }
+
+        if (startWriteAddr != 0 && writeLen != 0) {
+	        fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+          fileseek(p->ofile[node->fd], fileoffset);
+	        filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+          startWriteAddr = 0;
+          writeLen = 0;
+        } 
+        status = 0;
+        break;
+      }
+      node = (mmapInfo *)node->nxt;
+    }
+  }
+  return status;
 }
 
 //PAGEBREAK!
