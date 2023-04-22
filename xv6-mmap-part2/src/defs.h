@@ -188,3 +188,14 @@ void            clearpteu(pde_t *pgdir, char *uva);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// kmalloc/kmfree functions
+void* kmalloc(uint nbytes);
+void kmfree(void *ap);
+
+// mmmap/munmap function
+void mmapinit(void);
+void *mmap(void*, int, int, int, int, int);
+int munmap(void*, int);
+void unmapallmmap();
+void copyMmapPages(struct proc *srcProc, struct proc *destProc);

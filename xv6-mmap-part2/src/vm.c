@@ -6,6 +6,7 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "spinlock.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
@@ -383,6 +384,223 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
     va = va0 + PGSIZE;
   }
   return 0;
+}
+
+
+// Implementation of mmap/munmap 
+
+// DS for bookkeeping mmap/munmap 
+#define ANONYMOUS_REGION 0
+#define FILE_BACKED_REGION 1
+
+struct spinlock mmap_lock;
+uint mmapRegionSize;
+
+typedef struct {
+  void* addr;
+  int length;
+  int prot;
+  int flags;
+  int region; 
+  int offset;  
+  int fd;
+  void *nxt;
+} mmapInfo;
+
+mmapInfo* copyMmapInfo(mmapInfo* node)
+{
+  mmapInfo* newNode = (mmapInfo*)kmalloc(sizeof(mmapInfo));
+  newNode->addr = node->addr;
+  newNode->length = node->length;
+  newNode->prot = node->prot;
+  newNode->flags = node->flags;
+  newNode->region = node->region;
+  newNode->offset = node->offset;
+  newNode->fd = node->fd;
+  newNode->nxt = 0;
+  return newNode;
+}
+
+void mmapinit() 
+{
+  initlock(&mmap_lock, "mmap");
+  mmapRegionSize = 0;
+}
+
+void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int fd, int offset)
+{
+  char *a = 0; // page align address
+  char *b = 0; // tmp addr
+  void *ret = 0; 
+  mmapInfo* node = 0;
+  struct file* f = 0;
+  int newFd = -1;
+  int lenInPageSz = 0; 
+
+  if (p && length > 0)
+  {
+    acquire(&mmap_lock);
+    // input addr is 0 or non-zero, place page at end
+    // ignoreing hint 
+    b = (char*)(MMAPBASE + mmapRegionSize);
+    a = (char*)PGROUNDDOWN((uint)b);
+    lenInPageSz = (length - 1) / PGSIZE + 1;
+    ret = (void*)allocuvm(p->pgdir, (uint)a, (uint)a+length);
+    if (ret == 0) {
+      release(&mmap_lock);
+      return 0;
+    }
+    // allocuvm also zeroout the page
+    // insert this mapping in process mmapInfoList;
+    node = (mmapInfo*)kmalloc(sizeof(mmapInfo));
+    node->addr = a;
+    node->length = length;
+    node->offset = offset;
+    node->prot = prot;
+    node->flags = flags;
+    // check if fd is valid fd
+    if (fd < 0 || fd >= NOFILE || (f=p->ofile[fd]) == 0)
+    {
+      node->fd = -1;
+      node->region = ANONYMOUS_REGION;
+    }
+    else 
+    {
+      for (newFd = 0; newFd < NOFILE; newFd++)
+      {
+        if (p->ofile[newFd] == 0) {
+          p->ofile[newFd] = filedup(f);
+          break;
+        }
+      }
+      node->fd = newFd;
+      node->region = FILE_BACKED_REGION;
+    }
+    mmapRegionSize += (lenInPageSz * PGSIZE); // increase size if page is allocated in mmap region
+    release(&mmap_lock);
+    node->nxt = p->mmapInfoList;
+    p->mmapInfoList = (void*)node; // lock needed? 
+  }
+  return a;
+
+}
+
+void *mmap(void* addr, int length, int prot, int flags, int fd, int offset)
+{
+  struct proc *p = myproc();
+  return mmapCore(p, addr, length, prot, flags, fd, offset);
+}
+
+int munmap(void* addr, int length)
+{
+  struct proc *p = myproc();
+  int status = -1;
+  mmapInfo *node = 0;
+  mmapInfo *prevNode = 0;
+  if ((uint)addr == 0 || length <= 0)
+    return status;
+  if (p)
+  {
+    node = (mmapInfo *)p->mmapInfoList;
+    acquire(&mmap_lock);
+    while (node)
+    {
+      if (addr == node->addr && length == node->length)
+      {
+        // found address;
+        deallocuvm(p->pgdir, (uint)node->addr + node->length, (uint)node->addr);
+        // delete node 
+        if (prevNode) {
+          prevNode->nxt = node->nxt;
+        } else {
+          p->mmapInfoList = node->nxt;
+        }
+        kmfree((void*)node);
+        status = 0;
+        break;
+      }
+      prevNode = node;
+      node = (mmapInfo *)node->nxt;
+    }
+    release(&mmap_lock);
+  }
+  return status;
+}
+
+void unmapallmmap()
+{
+  struct proc *p = myproc();
+  mmapInfo *node = 0;
+  mmapInfo *tmp = 0;
+  if (p)
+  {
+    node = (mmapInfo *)p->mmapInfoList;
+    acquire(&mmap_lock);
+    while (node)
+    {
+      deallocuvm(p->pgdir, (uint)node->addr + node->length, (uint)node->addr);
+        // delete node 
+      tmp = node;
+      node = (mmapInfo *)node->nxt;
+      kmfree((void*)tmp);
+    }
+    release(&mmap_lock);
+  }
+}
+
+void copyMmapPages(struct proc *srcProc, struct proc *destProc)
+{
+  mmapInfo *srcNode = (mmapInfo*)srcProc->mmapInfoList;
+  mmapInfo *prevNode = 0;
+  mmapInfo *node = 0;
+  uint i, pa, flags;
+  char* mem;
+  pte_t *pte;
+  pde_t *d = 0;
+  pde_t *pgdir = 0;
+  if (srcProc == 0 || destProc == 0)
+    return;
+  d = destProc->pgdir;
+  pgdir = srcProc->pgdir;
+  acquire(&mmap_lock);
+  while(srcNode)
+  {
+    // allocate page for child process 
+    for (i = (uint)srcNode->addr; i < (uint)srcNode->addr + srcNode->length; i+=PGSIZE)
+    {
+      if ((pte = walkpgdir(pgdir, (void*)i, 0)) == 0) {
+        release(&mmap_lock);
+        return;
+      }
+      if (!(*pte & PTE_P)) {
+        release(&mmap_lock);
+        return;
+      }
+      pa = PTE_ADDR(*pte);
+      flags = PTE_FLAGS(*pte);
+      if ((mem = kalloc()) == 0) {
+        release(&mmap_lock);
+        return;
+      }
+      memmove(mem, (char*)P2V(pa), PGSIZE);
+      if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+        release(&mmap_lock);
+        return;
+      }
+    } 
+
+    // just copy the linked list as we have already copied the pages
+    node = copyMmapInfo(srcNode);
+    if (prevNode) {
+      prevNode->nxt = node;
+    } else {
+      // this is first node. 
+      destProc->mmapInfoList = node;
+    }
+    prevNode = node;
+    srcNode = srcNode->nxt;
+  }
+  release(&mmap_lock);
 }
 
 //PAGEBREAK!
