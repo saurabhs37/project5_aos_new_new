@@ -208,7 +208,8 @@ fork(void)
     if(curproc->ofile[i])
       np->ofile[i] = filedup(curproc->ofile[i]);
   np->cwd = idup(curproc->cwd);
-  copyMmapPages(curproc, np);
+  if (curproc->mmapInfoList != 0)
+    copyMmapPages(curproc, np);
 
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 

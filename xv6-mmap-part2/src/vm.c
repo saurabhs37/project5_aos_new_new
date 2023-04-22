@@ -590,8 +590,8 @@ void copyMmapPages(struct proc *srcProc, struct proc *destProc)
     for (i = (uint)srcNode->addr; i < (uint)srcNode->addr + srcNode->length; i+=PGSIZE)
     {
       if ((pte = walkpgdir(pgdir, (void*)i, 0)) == 0) {
-        release(&mmap_lock);
-        return;
+        // Page might not be mapped, Continue;
+        continue;
       }
       if (!(*pte & PTE_P)) {
         // if page doesn't exists, Continue 
