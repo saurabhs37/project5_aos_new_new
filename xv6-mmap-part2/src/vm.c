@@ -586,7 +586,7 @@ void copyMmapPages(struct proc *srcProc, struct proc *destProc)
   acquire(&mmap_lock);
   while(srcNode)
   {
-    // allocate page for child process 
+    // allocate page for child process
     for (i = (uint)srcNode->addr; i < (uint)srcNode->addr + srcNode->length; i+=PGSIZE)
     {
       if ((pte = walkpgdir(pgdir, (void*)i, 0)) == 0) {
@@ -594,8 +594,8 @@ void copyMmapPages(struct proc *srcProc, struct proc *destProc)
         return;
       }
       if (!(*pte & PTE_P)) {
-        release(&mmap_lock);
-        return;
+        // if page doesn't exists, Continue 
+        continue;
       }
       pa = PTE_ADDR(*pte);
       flags = PTE_FLAGS(*pte);
@@ -649,6 +649,7 @@ int lazyMampPageAllocation(uint addr)
         if (*pte & PTE_P) 
         {
           // page already allocated 
+          // Should not come here
           return 0;
         }
       }

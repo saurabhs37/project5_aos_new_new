@@ -200,7 +200,6 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
-  copyMmapPages(curproc, np);
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -209,6 +208,7 @@ fork(void)
     if(curproc->ofile[i])
       np->ofile[i] = filedup(curproc->ofile[i]);
   np->cwd = idup(curproc->cwd);
+  copyMmapPages(curproc, np);
 
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
