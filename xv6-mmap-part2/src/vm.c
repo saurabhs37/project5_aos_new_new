@@ -624,7 +624,7 @@ void copyMmapPages(struct proc *srcProc, struct proc *destProc)
   release(&mmap_lock);
 }
 
-int lazyMampPageAllocation(uint addr)
+int lazyMampPageAllocation(uint addr, uint err)
 {
   // first check if addr is correspond to any mmap pages
   struct proc *p = myproc();
@@ -660,13 +660,14 @@ int lazyMampPageAllocation(uint addr)
         return 0;
       }
       // Check if page is backed by file 
-      if (node->fd > 0) 
+      if (node->fd > 0 && err == 4) // 4 err is read for this address, Populate content from file 
       {
         fileoffset = node->offset + (a - (uint)node->addr);
         fileseek(p->ofile[node->fd], fileoffset);
         // Node : fileread is adjusting length of read of file length is less
         if (fileread(p->ofile[node->fd], (char*)a, PGSIZE) == -1)
         {
+          // TODO should we check err ? 4 -> strcpy and 6->memset
           // read failed
           // offset might be wrong
           // Can we panic? 
@@ -695,6 +696,26 @@ int lazyMampPageAllocation(uint addr)
   return 0;
 }
 
+int writeTofile(struct proc *p, uint fd, uint offset, uint startWriteAddr, uint writeLen, uint startNodeAddr)
+{
+  int status = 0;
+  int n = 0;
+  uint fileOffset = offset + startWriteAddr - startNodeAddr;
+  if (fileseek(p->ofile[fd], fileOffset)) 
+  {
+
+    n = filewrite(p->ofile[fd], (char*)startWriteAddr, writeLen); 
+    //cprintf("n = %d\n",n);
+    //if (filewrite(p->ofile[fd], (char*)startWriteAddr, writeLen) != -1) 
+    if (n != -1)
+    {
+      status = 1;
+    }
+  }
+  //cprintf("return status = %d\n", status);
+  return status;
+}
+
 int msync(void *addr, int length)
 {
   struct proc *p = myproc();
@@ -704,7 +725,7 @@ int msync(void *addr, int length)
   uint i = 0;
   void *startWriteAddr = 0;
   int writeLen = 0;
-  int fileoffset = 0;
+  //int fileoffset = 0;
   if ((uint)addr == 0 || length <= 0)
     return status;
   if (p)
@@ -724,9 +745,15 @@ int msync(void *addr, int length)
           {
             // Page not found? Must be something wrong
             if (startWriteAddr != 0 && writeLen != 0) {
-	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+	            /*
+              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
               fileseek(p->ofile[node->fd], fileoffset);
               filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              */
+              if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
+              {
+                return -1;
+              }
               startWriteAddr = 0;
               writeLen = 0;
             } 
@@ -734,9 +761,15 @@ int msync(void *addr, int length)
           }
           if (!(*pte & PTE_P)) { // Check page is allocated 
             if (startWriteAddr != 0 && writeLen != 0) {
-	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+	            /*
+              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
               fileseek(p->ofile[node->fd], fileoffset);
               filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              */
+              if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
+              {
+                return -1;
+              }
               startWriteAddr = 0;
               writeLen = 0;
             } 
@@ -746,9 +779,15 @@ int msync(void *addr, int length)
           if (!(*pte & PTE_W)) { // Page is write protected, Don't need to write data
             // write old block 
             if (startWriteAddr != 0 && writeLen != 0) {
-	            fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+	            /*
+              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
               fileseek(p->ofile[node->fd], fileoffset);
               filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+              */
+              if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
+              {
+                return -1;
+              }
               startWriteAddr = 0;
               writeLen = 0;
             } 
@@ -766,9 +805,15 @@ int msync(void *addr, int length)
         }
 
         if (startWriteAddr != 0 && writeLen != 0) {
-	        fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
+	        /*
+          fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
           fileseek(p->ofile[node->fd], fileoffset);
 	        filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
+          */
+          if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
+          {
+            return -1;
+          }
           startWriteAddr = 0;
           writeLen = 0;
         } 

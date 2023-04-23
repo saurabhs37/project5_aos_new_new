@@ -201,4 +201,4 @@ int munmap(void*, int);
 int msync(void*, int);
 void unmapallmmap();
 void copyMmapPages(struct proc *srcProc, struct proc *destProc);
-int lazyMampPageAllocation(uint addr);
+int lazyMampPageAllocation(uint addr, uint err);

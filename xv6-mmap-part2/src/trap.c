@@ -40,7 +40,7 @@ int pagefault_handler(struct trapframe *tf)
 
   // my code
   // check fault_addr is correspond to one of mmap pages
-  if (lazyMampPageAllocation(fault_addr))
+  if (lazyMampPageAllocation(fault_addr, tf->err))
   {
     return 1;
   }
