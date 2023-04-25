@@ -560,7 +560,8 @@ void unmapallmmap()
     while (node)
     {
       deallocuvm(p->pgdir, (uint)node->addr + node->length, (uint)node->addr);
-        // delete node 
+      // delete node
+      // We don't need to close the file as it is already being done in exit   
       tmp = node;
       node = (mmapInfo *)node->nxt;
       kmfree((void*)tmp);
@@ -662,15 +663,19 @@ int lazyMampPageAllocation(uint addr, uint err)
       // Check if page is backed by file 
       if (node->fd > 0 && err == 4) // 4 err is read for this address, Populate content from file 
       {
+        int readLen = PGSIZE;
         fileoffset = node->offset + (a - (uint)node->addr);
+        cprintf("read offset %d\n", fileoffset);
         fileseek(p->ofile[node->fd], fileoffset);
-        // Node : fileread is adjusting length of read of file length is less
-        if (fileread(p->ofile[node->fd], (char*)a, PGSIZE) == -1)
+        if (a + readLen > (uint)node->addr + node->length) {
+          // adjust the length, Make sure not passing from node->length
+          readLen = (uint)node->addr + node->length - a;
+        } 
+        cprintf("read  addr %p len %d\n", (char*)a, readLen);
+        if (fileread(p->ofile[node->fd], (char*)a, readLen) == -1)
         {
-          // TODO should we check err ? 4 -> strcpy and 6->memset
+          // err ? 4 -> strcpy and 6->memset
           // read failed
-          // offset might be wrong
-          // Can we panic? 
           return 0; 
         }
       }
@@ -684,11 +689,9 @@ int lazyMampPageAllocation(uint addr, uint err)
           (*pte) = (*pte) & ~(PTE_W);
         } else 
         {
-          // not possible 
           return 0;
         } 
       }
-
       return 1;
     }
     node = (mmapInfo*)node->nxt;
@@ -701,18 +704,16 @@ int writeTofile(struct proc *p, uint fd, uint offset, uint startWriteAddr, uint 
   int status = 0;
   int n = 0;
   uint fileOffset = offset + startWriteAddr - startNodeAddr;
+  cprintf("file offset = %d\n", fileOffset);
   if (fileseek(p->ofile[fd], fileOffset)) 
   {
-
+    cprintf( "writeToFile %p %d\n", startWriteAddr, writeLen);
     n = filewrite(p->ofile[fd], (char*)startWriteAddr, writeLen); 
-    //cprintf("n = %d\n",n);
-    //if (filewrite(p->ofile[fd], (char*)startWriteAddr, writeLen) != -1) 
     if (n != -1)
     {
       status = 1;
     }
   }
-  //cprintf("return status = %d\n", status);
   return status;
 }
 
@@ -725,7 +726,6 @@ int msync(void *addr, int length)
   uint i = 0;
   void *startWriteAddr = 0;
   int writeLen = 0;
-  //int fileoffset = 0;
   if ((uint)addr == 0 || length <= 0)
     return status;
   if (p)
@@ -735,7 +735,8 @@ int msync(void *addr, int length)
     {
       if (addr == node->addr && length == node->length)
       {
-        if (node->fd < 0 || p->ofile[node->fd] == 0) 
+        // Check if node is filed backed
+        if (node->region != MAP_FILE || node->fd < 0 || p->ofile[node->fd] == 0) 
           return status;
 
         i = (uint)addr;
@@ -745,11 +746,6 @@ int msync(void *addr, int length)
           {
             // Page not found? Must be something wrong
             if (startWriteAddr != 0 && writeLen != 0) {
-	            /*
-              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
-              fileseek(p->ofile[node->fd], fileoffset);
-              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
-              */
               if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
               {
                 return -1;
@@ -759,13 +755,8 @@ int msync(void *addr, int length)
             } 
             continue;  
           }
-          if (!(*pte & PTE_P)) { // Check page is allocated 
+          if (!(*pte & PTE_P)) { // page is not allocated 
             if (startWriteAddr != 0 && writeLen != 0) {
-	            /*
-              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
-              fileseek(p->ofile[node->fd], fileoffset);
-              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
-              */
               if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
               {
                 return -1;
@@ -779,11 +770,6 @@ int msync(void *addr, int length)
           if (!(*pte & PTE_W)) { // Page is write protected, Don't need to write data
             // write old block 
             if (startWriteAddr != 0 && writeLen != 0) {
-	            /*
-              fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
-              fileseek(p->ofile[node->fd], fileoffset);
-              filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
-              */
               if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
               {
                 return -1;
@@ -797,19 +783,22 @@ int msync(void *addr, int length)
           if (*pte & PTE_D) { // Dirty bit set, We need to write page
             if (startWriteAddr != 0 && writeLen != 0) {
               writeLen += PGSIZE;
+              if ((uint)startWriteAddr + writeLen > (uint)node->addr + node->length) {
+                  // adjust the length, Make sure not passing from node->length
+                  writeLen = node->length +(uint)node->addr - (uint)startWriteAddr;
+              }
             } else {
               startWriteAddr = (void*)i;
               writeLen = PGSIZE;
+              if ((uint)startWriteAddr + writeLen > (uint)node->addr + node->length) {
+                  // adjust the length, Make sure not passing from node->length
+                  writeLen = node->length +(uint)node->addr - (uint)startWriteAddr;
+              }
             }
           }
         }
 
         if (startWriteAddr != 0 && writeLen != 0) {
-	        /*
-          fileoffset = node->offset + ((uint) startWriteAddr - (uint)node->addr); 	
-          fileseek(p->ofile[node->fd], fileoffset);
-	        filewrite(p->ofile[node->fd], startWriteAddr, writeLen);
-          */
           if (!writeTofile(p, node->fd, node->offset, (uint)startWriteAddr, writeLen, (uint)node->addr))
           {
             return -1;
