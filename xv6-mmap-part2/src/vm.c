@@ -654,28 +654,33 @@ int lazyMampPageAllocation(uint addr, uint err)
           return 0;
         }
       }
+      if (err == 6 && node->prot != PROT_WRITE) {
+        // Write of address on write protected mmap region
+        return 0;
+      }
+      
       ret = (void*)allocuvm(p->pgdir, a, a+PGSIZE);
       if (ret == 0)
       {
-        //panic("lazyMmapPageAllocation");
         return 0;
       }
       // Check if page is backed by file 
-      if (node->fd > 0 && err == 4) // 4 err is read for this address, Populate content from file 
+      if (node->fd > 0) 
       {
         int readLen = PGSIZE;
+        if (node->fd >= NOFILE || p->ofile[node->fd] == 0) {
+          return 0;
+        }
         fileoffset = node->offset + (a - (uint)node->addr);
-        cprintf("read offset %d\n", fileoffset);
         fileseek(p->ofile[node->fd], fileoffset);
         if (a + readLen > (uint)node->addr + node->length) {
           // adjust the length, Make sure not passing from node->length
           readLen = (uint)node->addr + node->length - a;
         } 
-        cprintf("read  addr %p len %d\n", (char*)a, readLen);
         if (fileread(p->ofile[node->fd], (char*)a, readLen) == -1)
         {
           // err ? 4 -> strcpy and 6->memset
-          // read failed
+          // read failed, might be permission problem
           return 0; 
         }
       }
@@ -692,6 +697,15 @@ int lazyMampPageAllocation(uint addr, uint err)
           return 0;
         } 
       }
+
+      // clear the dirty bit 
+      if (pte != 0 && *pte) 
+      {
+        if (*pte & PTE_D) 
+        {
+          (*pte) = (*pte) & ~(PTE_D);
+        }
+      }
       return 1;
     }
     node = (mmapInfo*)node->nxt;
@@ -704,10 +718,8 @@ int writeTofile(struct proc *p, uint fd, uint offset, uint startWriteAddr, uint 
   int status = 0;
   int n = 0;
   uint fileOffset = offset + startWriteAddr - startNodeAddr;
-  cprintf("file offset = %d\n", fileOffset);
   if (fileseek(p->ofile[fd], fileOffset)) 
   {
-    cprintf( "writeToFile %p %d\n", startWriteAddr, writeLen);
     n = filewrite(p->ofile[fd], (char*)startWriteAddr, writeLen); 
     if (n != -1)
     {
