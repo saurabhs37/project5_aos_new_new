@@ -453,7 +453,7 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
     //}
     // check flags are consistent with fd 
     if (flags == MAP_ANONYMOUS) {
-        if (fd > 0) {
+        if (fd > 0 || offset != 0) {
         // error, fd is provided for ANONYMOUS
         release(&mmap_lock);
         return 0;
