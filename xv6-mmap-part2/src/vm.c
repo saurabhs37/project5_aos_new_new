@@ -698,8 +698,8 @@ int lazyMampPageAllocation(uint addr, uint err)
         } 
       }
 
-      // clear the dirty bit 
-      if (pte != 0 && *pte) 
+      // clear the dirty bit in case of read 
+      if (err == 4 && pte != 0 && *pte) 
       {
         if (*pte & PTE_D) 
         {
