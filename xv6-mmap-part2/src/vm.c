@@ -446,11 +446,6 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
     lenInPageSz = (length - 1) / PGSIZE + 1;
     // Lazy page loading, Don't allocate page now
     // Page will be allocated in fault handler
-    //ret = (void*)allocuvm(p->pgdir, (uint)a, (uint)a+length);
-    //if (ret == 0) {
-    //  release(&mmap_lock);
-    //  return 0;
-    //}
     // check flags are consistent with fd 
     if (flags == MAP_ANONYMOUS) {
         if (fd > 0 || offset != 0) {
@@ -459,7 +454,7 @@ void *mmapCore(struct proc *p, void* addr, int length, int prot, int flags, int 
         return 0;
       }
     } else if (flags == MAP_FILE) {
-      if (fd < 0 || fd >= NOFILE || p->ofile[fd] == 0) {
+      if (fd < 0 || fd >= NOFILE || p->ofile[fd] == 0 || offset < 0) {
         // error
         release(&mmap_lock);
         return 0;
@@ -752,7 +747,7 @@ int msync(void *addr, int length)
           return status;
 
         i = (uint)addr;
-        for(; i < (uint)addr +node->length; i += PGSIZE)
+        for(; i < (uint)addr + node->length; i += PGSIZE)
         {
           if ((pte = walkpgdir(p->pgdir, (void*)i , 0)) == 0) 
           {
